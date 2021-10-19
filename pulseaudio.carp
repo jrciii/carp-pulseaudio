@@ -52,7 +52,7 @@
   (register mainloop-run (Fn [(Ptr MainLoop) (Ptr Int)] Int) "pa_mainloop_run")
   (register mainloop-get-api (Fn [(Ptr MainLoop)] (Ptr MainLoopApi)) "pa_mainloop_get_api")
   (register threaded-mainloop-get-api (Fn [(Ptr ThreadedMainLoop)] (Ptr MainLoopApi)) "pa_threaded_mainloop_get_api")
-  (register context-set-state-callback (Fn [(Ptr Context) (Ptr (Fn [(Ptr Context) (Ptr userdata)] ())) (Ptr userdata)] ()) "pa_context_set_state_callback")
+  (register context-set-state-callback (Fn [(Ptr Context) (Ptr ()) (Ptr ())] ()) "pa_context_set_state_callback")
   (register context-new (Fn [(Ptr MainLoopApi) (Ptr CChar)] (Ptr Context)) "pa_context_new")
   (register context-connect (Fn [(Ptr Context) (Ptr CChar) ContextFlagsT (Ptr CSpawnApi)] Int) "pa_context_connect")
   (register context-get-state (Fn [(Ptr Context)] ContextStateT) "pa_context_get_state")
@@ -65,6 +65,7 @@
 
 (use PulseAudio)
 
+(sig context-state-cb (Fn [(Ptr Context) (Ptr ThreadedMainLoop)] ()))
 (defn context-state-cb [context mainloop]
   (threaded-mainloop-signal mainloop 0))
 
@@ -82,7 +83,7 @@
                                  (assert (= 1 (context-is-good state)))
                                  (= ContextState.ContextReady state)))]
     (IO.println "Beginning PulseAudio Test")
-    (context-set-state-callback context (Pointer.address &context-state-cb) mainloop)
+    (context-set-state-callback context (Function.unsafe-ptr &context-state-cb) (Unsafe.coerce &mainloop))
     (threaded-mainloop-lock mainloop)
     (assert (= 0 (threaded-mainloop-start mainloop)))
     (assert (= 0 (context-connect context NULL ContextFlags.ContextNoAutoSpawn NULL)))
