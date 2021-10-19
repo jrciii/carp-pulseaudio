@@ -1,5 +1,5 @@
 ; https://stackoverflow.com/questions/29977651/how-can-the-pulseaudio-asynchronous-library-be-used-to-play-raw-pcm-data
-
+;; (Debug.sanitize-addresses)
 (posix-only
  (system-include "pulse/pulseaudio.h")
  (add-pkg "libpulse"))
@@ -67,7 +67,9 @@
 
 (sig context-state-cb (Fn [(Ptr Context) (Ptr ThreadedMainLoop)] ()))
 (defn context-state-cb [context mainloop]
-  (threaded-mainloop-signal mainloop 0))
+  (do
+    (IO.println "CB")
+    (threaded-mainloop-signal mainloop 0)))
 
 (defn stream-state-cb [stream mainloop]
   (threaded-mainloop-signal mainloop 0))
@@ -83,9 +85,11 @@
                                  (assert (= 1 (context-is-good state)))
                                  (= ContextState.ContextReady state)))]
     (IO.println "Beginning PulseAudio Test")
-    (context-set-state-callback context (Function.unsafe-ptr &context-state-cb) (Unsafe.coerce &mainloop))
     (threaded-mainloop-lock mainloop)
+    (context-set-state-callback context (Function.unsafe-ptr &context-state-cb) (Unsafe.coerce mainloop))
+    (IO.println "Set CB")
     (assert (= 0 (threaded-mainloop-start mainloop)))
     (assert (= 0 (context-connect context NULL ContextFlags.ContextNoAutoSpawn NULL)))
-    (until (state-readyp) (do (IO.println &(str (state-readyp))) (threaded-mainloop-wait mainloop)))
+    (IO.println "Waiting for context ready")
+    (until (state-readyp) (do (IO.println "About to wait") (threaded-mainloop-wait mainloop) (IO.println "Done waiting")))
     0))
