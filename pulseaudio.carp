@@ -1,0 +1,90 @@
+; https://stackoverflow.com/questions/29977651/how-can-the-pulseaudio-asynchronous-library-be-used-to-play-raw-pcm-data
+
+(posix-only
+ (system-include "pulse/pulseaudio.h")
+ (add-pkg "libpulse"))
+
+(register-type MainLoop "pa_mainloop")
+(register-type ThreadedMainLoop "pa_threaded_mainloop")
+(register-type MainLoopApi "pa_mainloop_api")
+(register-type Context "pa_context")
+(register-type Stream "pa_stream")
+(register-type ContextNotifyCbT "pa_context_notify_cb_t")
+(register-type ContextFlagsT "pa_context_flags_t")
+(register-type ContextStateT "pa_context_state_t")
+(register-type SpawnApi "pa_spawn_api")
+(register-type CSpawnApi "const pa_spawn_api")
+
+(defmodule PulseAudio
+  (defmodule ContextState
+    (defn = [a b]
+      (Int.= (enum-to-int (the ContextStateT a))
+             (enum-to-int (the ContextStateT b))))
+    (implements = PulseAudio.ContextState.=)
+    ;; (register copy (Fn [(Ref ContextStateT)] ContextStateT))
+    ;; (implements copy PulseAudio.ContextState.copy)
+    ;; (register str (Fn [ContextStateT] String))
+    ;; (implements str PulseAudio.ContextState.str)
+    ;; (defn prn [x]
+      ;; (PulseAudio.ContextState.str x))
+    ;; (implements prn PulseAudio.ContextState.prn)
+    (register ContextReady ContextStateT "PA_CONTEXT_READY"))  
+  (defmodule ContextFlags
+    (defn = [a b]
+      (Int.= (enum-to-int (the ContextFlagsT a))
+             (enum-to-int (the ContextFlagsT b))))
+    (implements = PulseAudio.ContextFlags.=)
+    (defn str [a]
+      (str (enum-to-int (the ContextFlagsT a))))
+    (implements str PulseAudio.ContextFlags.str)
+    ;; (register copy (Fn [(Ref ContextFlagsT)] ContextFlagsT))
+    ;; (implements copy PulseAudio.ContextFlags.copy)
+    ;; (register str (Fn [ContextFlagsT] String))
+    ;; (implements str PulseAudio.ContextFlags.str)
+    ;; (defn prn [x]
+      ;; (PulseAudio.ContextFlags.str x))
+    ;; (implements prn PulseAudio.ContextFlags.prn)
+    (register ContextNoAutoSpawn ContextFlagsT "PA_CONTEXT_NOAUTOSPAWN"))
+  (register mainloop-new (Fn [] (Ptr MainLoop)) "pa_mainloop_new")
+  (register threaded-mainloop-new (Fn [] (Ptr ThreadedMainLoop)) "pa_threaded_mainloop_new")
+  (register mainloop-free (Fn [(Ptr MainLoop)] ()) "pa_mainloop_free")
+  (register threaded-mainloop-free (Fn [(Ptr ThreadedMainLoop)] ()) "pa_threaded_mainloop_free")
+  (register mainloop-run (Fn [(Ptr MainLoop) (Ptr Int)] Int) "pa_mainloop_run")
+  (register mainloop-get-api (Fn [(Ptr MainLoop)] (Ptr MainLoopApi)) "pa_mainloop_get_api")
+  (register threaded-mainloop-get-api (Fn [(Ptr ThreadedMainLoop)] (Ptr MainLoopApi)) "pa_threaded_mainloop_get_api")
+  (register context-set-state-callback (Fn [(Ptr Context) (Ptr (Fn [(Ptr Context) (Ptr userdata)] ())) (Ptr userdata)] ()) "pa_context_set_state_callback")
+  (register context-new (Fn [(Ptr MainLoopApi) (Ptr CChar)] (Ptr Context)) "pa_context_new")
+  (register context-connect (Fn [(Ptr Context) (Ptr CChar) ContextFlagsT (Ptr CSpawnApi)] Int) "pa_context_connect")
+  (register context-get-state (Fn [(Ptr Context)] ContextStateT) "pa_context_get_state")
+  (register context-is-good (Fn [ContextStateT] Int) "PA_CONTEXT_IS_GOOD")
+  (register threaded-mainloop-lock (Fn [(Ptr ThreadedMainLoop)] ()) "pa_threaded_mainloop_lock")
+  (register threaded-mainloop-start (Fn [(Ptr ThreadedMainLoop)] Int) "pa_threaded_mainloop_start")
+  (register threaded-mainloop-signal (Fn [(Ptr ThreadedMainLoop) Int] ()) "pa_threaded_mainloop_signal")
+  (register threaded-mainloop-wait (Fn [(Ptr ThreadedMainLoop)] ()) "pa_threaded_mainloop_wait")
+  (register mainloop-quit (Fn [(Ptr MainLoop) Int] ()) "pa_mainloop_quit"))
+
+(use PulseAudio)
+
+(defn context-state-cb [context mainloop]
+  (threaded-mainloop-signal mainloop 0))
+
+(defn stream-state-cb [stream mainloop]
+  (threaded-mainloop-signal mainloop 0))
+
+(defn stream-success-cb [stream success userdata]
+  ())
+
+(defn main []
+  (let-do [mainloop (threaded-mainloop-new)
+           mainloop-api (threaded-mainloop-get-api mainloop)
+           context (context-new mainloop-api (String.cstr "test"))
+           state-readyp (fn [] (let-do [state (context-get-state context)]
+                                 (assert (= 1 (context-is-good state)))
+                                 (= ContextState.ContextReady state)))]
+    (IO.println "Beginning PulseAudio Test")
+    (context-set-state-callback context (Pointer.address &context-state-cb) mainloop)
+    (threaded-mainloop-lock mainloop)
+    (assert (= 0 (threaded-mainloop-start mainloop)))
+    (assert (= 0 (context-connect context NULL ContextFlags.ContextNoAutoSpawn NULL)))
+    (until (state-readyp) (do (IO.println &(str (state-readyp))) (threaded-mainloop-wait mainloop)))
+    0))
