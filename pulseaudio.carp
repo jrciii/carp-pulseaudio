@@ -34,6 +34,12 @@
   "$DECL {
     return (char**)c;
   }")
+(deftemplate rmconst (Fn [(Ptr CVoid)] (Ptr ()))
+  "void* $NAME (const void* c)"
+  "$DECL {
+    printf (\"rmconst PVal %p\\n\", c);
+    return (void*)c;
+  }")
 (defmodule PulseAudio
   (defmodule StreamFlags
     (register NoFlags StreamFlagsT "PA_STREAM_NOFLAGS"))
@@ -44,7 +50,8 @@
     (implements = PulseAudio.StreamState.=)
     (register StreamReady StreamStateT "PA_STREAM_READY"))
   (defmodule SampleFormat
-    (register SampleS16le SampleFormatT "PA_SAMPLE_S16LE"))
+    (register SampleS16LE SampleFormatT "PA_SAMPLE_S16LE")
+    (register SampleFloat32LE SampleFormatT "PA_SAMPLE_FLOAT32LE"))
   (defmodule ContextState
     (defn = [a b]
       (Int.= (enum-to-int (the ContextStateT a))
@@ -99,7 +106,7 @@
   (register stream-set-read-callback (Fn [(Ptr Stream) (Ptr ()) (Ptr ())] ()) "pa_stream_set_read_callback")
   (register stream-connect-record (Fn [(Ptr Stream) (Ptr CChar) (Ref BufferAttr) StreamFlagsT] Int) "pa_stream_connect_record")
   (register stream-get-state (Fn [(Ptr Stream)] StreamStateT) "pa_stream_get_state")
-  (register stream-peek (Fn [(Ptr Stream) (Ref (Ptr CVoid)) (Ptr SizeT)] Int) "pa_stream_peek")
+  (register stream-peek (Fn [(Ptr Stream) (Ref (Ptr CVoid)) (Ref SizeT)] Int) "pa_stream_peek")
   (register stream-drop (Fn [(Ptr Stream)] Int) "pa_stream_drop"))
 
 (use PulseAudio)
@@ -118,30 +125,56 @@
 (sig cvp (Fn [] (Ptr CVoid)))
 (defn cvp [] NULL)
 
-(deftemplate vtochar (Fn [(Ptr CVoid)] Char)
-  "char $NAME (const void* c)"
+(deftemplate vtof (Fn [(Ptr CVoid)] (Ptr Float))
+  "float* $NAME (const void* c)"
   "$DECL {
-    printf (\"%c\\n\", *((const char*)c));
-    return *((const char*)c);
+    return (float*)c;
+  }")
+
+(deftemplate peek (Fn [(Ptr Stream)] ())
+  "void $NAME (pa_stream *s)"
+  "$DECL {
+    const void* dat = NULL;
+    size_t length = 0;
+    pa_stream_peek (s, &dat, &length);
+    printf (\"PEEK NUMBYTES %u FIRST PCM %f\\n\", (unsigned int)length, ((float*)dat)[0]);
+  }")
+
+(deftemplate sizet (Fn [Int] SizeT)
+  "size_t $NAME (int x)"
+  "$DECL {
+    return (size_t)x;
+  }")
+
+(deftemplate sizetgt0 (Fn [SizeT] Bool)
+  "bool $NAME (size_t x)"
+  "$DECL {
+    return x > 0;
+  }")
+
+(deftemplate sizetuint (Fn [SizeT] Uint64)
+  "unsigned int $NAME (size_t x)"
+  "$DECL {
+    return (unsigned int)x;
   }")
 
 (sig stream-read-cb (Fn [(Ptr Stream) CSizeT (Ptr ())] ()))
 (defn stream-read-cb [stream nbytes userdata]
   (let-do [data (cvp)
-           actualbytes 0]
-    (assert (= 0 (stream-peek stream &data (Unsafe.coerce &actualbytes))))
-    (if (> actualbytes 0)
+           actualbytes (sizet 0)]
+    ;; (peek stream)
+    (assert (= 0 (stream-peek stream &data &actualbytes)))
+    (if (sizetgt0 actualbytes)
       (do
         (assert (= 0 (stream-drop stream)))
         (if (Pointer.eq NULL data)
           (println* "Encountered hole")
-          (do (println* "Read num bytes " &(str actualbytes))
-              (println* "First PCM " (vtochar data)))))
+          (println* "Bytes: " (sizetuint actualbytes) " First PCM L: " (Pointer.to-value (vtof data)) " R: " (Pointer.to-value (Pointer.inc (vtof data))))))
       (println* "Read no bytes from stream"))))
 
 (sig server-info-cb (Fn [(Ptr Context) (Ref ServerInfo) (Ptr ())] ()))
 (defn server-info-cb [context info userdata]
-  (let-do [spec (SampleSpec.init SampleFormat.SampleS16le (Uint32.from-long 44100l) (Uint8.from-long 1l))
+  (let-do [spec (SampleSpec.init SampleFormat.SampleFloat32LE (Uint32.from-long 44100l) (Uint8.from-long 2l))
            stream (stream-new context (String.cstr "output monitor") &spec (Pointer.to-ref NULL))
            monitor (String.concat &[@(from-cstring (ServerInfo.default_sink_name info)) @".monitor"])]
     (stream-set-state-callback stream (Function.unsafe-ptr &stream-notify-cb) NULL)
@@ -175,3 +208,4 @@
     (threaded-mainloop-unlock mainloop)
     (sleep-seconds 1)
     0))
+
