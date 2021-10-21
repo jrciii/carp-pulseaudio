@@ -1,6 +1,8 @@
 ; https://stackoverflow.com/questions/29977651/how-can-the-pulseaudio-asynchronous-library-be-used-to-play-raw-pcm-data
 ; https://github.com/tanuva/padump/blob/master/src/main.cpp
+; https://github.com/projectM-visualizer/projectm/tree/master/src/projectM-pulseaudio
 ;; (Debug.sanitize-addresses)
+(load-and-use SDL)
 (posix-only
  (system-include "pulse/pulseaudio.h")
  (add-pkg "libpulse"))
@@ -29,17 +31,7 @@
 (register-type BufferAttr "pa_buffer_attr")
 (register-type StreamFlagsT "pa_stream_flags_t")
 (register-type StreamStateT "pa_stream_state_t")
-(deftemplate from-cstring (Fn [(Ref CString)] (Ref String))
-  "char** $NAME (const char** c)"
-  "$DECL {
-    return (char**)c;
-  }")
-(deftemplate rmconst (Fn [(Ptr CVoid)] (Ptr ()))
-  "void* $NAME (const void* c)"
-  "$DECL {
-    printf (\"rmconst PVal %p\\n\", c);
-    return (void*)c;
-  }")
+
 (defmodule PulseAudio
   (defmodule StreamFlags
     (register NoFlags StreamFlagsT "PA_STREAM_NOFLAGS"))
@@ -111,6 +103,12 @@
 
 (use PulseAudio)
 
+(defmacro when [pred :rest rest]
+  `(if %pred (do %@rest) ()))
+
+(defmacro unless [pred :rest rest]
+  `(if %pred () (do %@rest)))
+
 (sig context-state-cb (Fn [(Ptr Context) (Ptr ThreadedMainLoop)] ()))
 (defn context-state-cb [context mainloop]
   (do
@@ -131,15 +129,6 @@
     return (float*)c;
   }")
 
-(deftemplate peek (Fn [(Ptr Stream)] ())
-  "void $NAME (pa_stream *s)"
-  "$DECL {
-    const void* dat = NULL;
-    size_t length = 0;
-    pa_stream_peek (s, &dat, &length);
-    printf (\"PEEK NUMBYTES %u FIRST PCM %f\\n\", (unsigned int)length, ((float*)dat)[0]);
-  }")
-
 (deftemplate sizet (Fn [Int] SizeT)
   "size_t $NAME (int x)"
   "$DECL {
@@ -158,27 +147,40 @@
     return (unsigned int)x;
   }")
 
-(sig stream-read-cb (Fn [(Ptr Stream) CSizeT (Ptr ())] ()))
+(deftemplate from-cstring (Fn [(Ref CString)] (Ref String))
+  "char** $NAME (const char** c)"
+  "$DECL {
+    return (char**)c;
+  }")
+
+(deftype State [lc Float, rc Float])
+
+(sig stream-read-cb (Fn [(Ptr Stream) CSizeT (Ptr State)] ()))
 (defn stream-read-cb [stream nbytes userdata]
   (let-do [data (cvp)
            actualbytes (sizet 0)]
-    ;; (peek stream)
     (assert (= 0 (stream-peek stream &data &actualbytes)))
     (if (sizetgt0 actualbytes)
       (do
-        (assert (= 0 (stream-drop stream)))
         (if (Pointer.eq NULL data)
           (println* "Encountered hole")
-          (println* "Bytes: " (sizetuint actualbytes) " First PCM L: " (Pointer.to-value (vtof data)) " R: " (Pointer.to-value (Pointer.inc (vtof data))))))
+          (let-do [state (Pointer.to-ref userdata)
+                   lpcm (vtof data)
+                   rpcm (vtof (Pointer.add data 4l))
+                   left (State.lc state)
+                   right (State.rc state)]
+            (State.set-lc! state (Pointer.to-value lpcm)) 
+            (State.set-rc! state (Pointer.to-value rpcm))))
+        (assert (= 0 (stream-drop stream))))
       (println* "Read no bytes from stream"))))
 
-(sig server-info-cb (Fn [(Ptr Context) (Ref ServerInfo) (Ptr ())] ()))
+(sig server-info-cb (Fn [(Ptr Context) (Ref ServerInfo) (Ptr State)] ()))
 (defn server-info-cb [context info userdata]
   (let-do [spec (SampleSpec.init SampleFormat.SampleFloat32LE (Uint32.from-long 44100l) (Uint8.from-long 2l))
            stream (stream-new context (String.cstr "output monitor") &spec (Pointer.to-ref NULL))
            monitor (String.concat &[@(from-cstring (ServerInfo.default_sink_name info)) @".monitor"])]
     (stream-set-state-callback stream (Function.unsafe-ptr &stream-notify-cb) NULL)
-    (stream-set-read-callback stream (Function.unsafe-ptr &stream-read-cb) NULL)
+    (stream-set-read-callback stream (Function.unsafe-ptr &stream-read-cb) (Unsafe.coerce userdata))
     (println* "server info cb. monitor: " &monitor)
     (assert (= 0 (stream-connect-record stream (String.cstr &monitor) (Pointer.to-ref NULL) StreamFlags.NoFlags)))
     (println* "Connected to " &monitor)))
@@ -189,8 +191,30 @@
 (defn stream-success-cb [stream success userdata]
   ())
 
+;(sig tick (Fn [(Ref State)] (Ref State)))
+(defn tick [state]
+  state)
+
+(sig draw (Fn [(Ref SDLApp) (Ptr SDL_Renderer) (Ref (Ptr State))] ()))
+(defn draw [app rend state]
+  (let-do [s (Pointer.to-value @state)
+           lc @(State.lc &s)
+           rc @(State.rc &s)]
+    (when (> lc 1f) (println* "LC GT " lc))
+    (when (> rc 1f) (println* "RC GT " rc))
+    (SDL.set-render-draw-color rend 0 0 0 255)
+    (SDL.render-clear rend)
+    (SDL.set-render-draw-color rend
+                               0 0 255 255)
+    (SDL.render-fill-rect rend (Pointer.address &(SDL.rect 100 (+ 145 (round (Float.* 145.0f lc))) 10 10)))
+    (SDL.set-render-draw-color rend
+                               255 0 0 255)
+    (SDL.render-fill-rect rend (Pointer.address &(SDL.rect 300 (+ 145 (round (Float.* 145.0f rc))) 10 10)))))
+
 (defn main []
-  (let-do [mainloop (threaded-mainloop-new)
+  (let-do [app (SDLApp.create "Audio Visualization" 400 300)
+           app-state (State.init 0f 0f)
+           mainloop (threaded-mainloop-new)
            mainloop-api (threaded-mainloop-get-api mainloop)
            context (context-new mainloop-api (String.cstr "test"))
            state-readyp (fn [] (let-do [state (context-get-state context)]
@@ -204,8 +228,7 @@
     (assert (= 0 (context-connect context NULL ContextFlags.ContextNoAutoSpawn NULL)))
     (IO.println "Waiting for context ready")
     (until (state-readyp) (do (IO.println "About to wait") (threaded-mainloop-wait mainloop) (IO.println "Done waiting")))
-    (context-get-server-info context (Function.unsafe-ptr &server-info-cb) NULL)
+    (context-get-server-info context (Function.unsafe-ptr &server-info-cb) (Unsafe.coerce (Pointer.address &app-state)))
     (threaded-mainloop-unlock mainloop)
-    (sleep-seconds 1)
+    (SDLApp.run-with-callbacks &app SDLApp.quit-on-esc tick draw (Pointer.address &app-state))
     0))
-
